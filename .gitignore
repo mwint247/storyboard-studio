@@ -1,0 +1,7 @@
+# Runtime data (your storyboards) — keep out of git
+data/
+__pycache__/
+*.pyc
+venv/
+.venv/
+.env

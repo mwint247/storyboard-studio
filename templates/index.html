@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Storyboard Studio</title>
+  <style>
+    :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#e6e9ef; --muted:#8b93a7; --accent:#6ea8fe; --accent2:#3ddc97; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+    header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+    header h1 { font-size:18px; margin:0; }
+    main { display:grid; grid-template-columns:300px 1fr; min-height:calc(100vh - 53px); }
+    .sidebar { border-right:1px solid var(--line); padding:16px; overflow:auto; }
+    .content { padding:16px; overflow:auto; }
+    button { background:var(--accent); color:#0b1020; border:0; border-radius:8px; padding:8px 12px; font-weight:600; cursor:pointer; }
+    button.ghost { background:transparent; color:var(--fg); border:1px solid var(--line); font-weight:400; }
+    button.danger { background:transparent; color:#ff6b6b; border:1px solid #50212a; }
+    input,textarea,select { width:100%; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px; margin:6px 0 12px; font:inherit; }
+    label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .board { padding:10px 12px; border:1px solid var(--line); border-radius:10px; margin-bottom:10px; cursor:pointer; background:var(--panel); }
+    .board.active { border-color:var(--accent); }
+    .board h3 { margin:0 0 2px; font-size:15px; }
+    .board p { margin:0; color:var(--muted); font-size:12px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px; }
+    .frame { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; }
+    .frame .shot { display:inline-block; font-size:11px; color:var(--accent2); border:1px solid #1d3b30; border-radius:20px; padding:2px 8px; margin-bottom:6px; }
+    .frame h4 { margin:4px 0; font-size:15px; }
+    .frame .cap { color:var(--fg); font-size:13px; }
+    .frame .notes { color:var(--muted); font-size:12px; margin-top:6px; white-space:pre-wrap; }
+    .empty { color:var(--muted); padding:40px; text-align:center; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .modal-bg { position:fixed; inset:0; background:#0008; display:none; align-items:center; justify-content:center; }
+    .modal-bg.show { display:flex; }
+    .modal { background:var(--bg); border:1px solid var(--line); border-radius:14px; padding:20px; width:min(440px,92vw); }
+    .hint { color:var(--muted); font-size:12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎬 Storyboard Studio</h1>
+    <span class="hint">local Flask app — data saved as JSON in ./data</span>
+    <span style="flex:1"></span>
+    <button class="ghost" id="newBoard">+ New storyboard</button>
+  </header>
+  <main>
+    <aside class="sidebar" id="boardList"></aside>
+    <section class="content" id="content">
+      <div class="empty">Select or create a storyboard to begin.</div>
+    </section>
+  </main>
+
+  <!-- New board modal -->
+  <div class="modal-bg" id="boardModal">
+    <div class="modal">
+      <h3>New storyboard</h3>
+      <label>Title</label><input id="bTitle" placeholder="e.g. The Park — Act 1" />
+      <label>Description</label><textarea id="bDesc" rows="3" placeholder="Logline / notes"></textarea>
+      <div class="row"><button id="bSave">Create</button><button class="ghost" id="bCancel">Cancel</button></div>
+    </div>
+  </div>
+
+  <!-- New frame modal -->
+  <div class="modal-bg" id="frameModal">
+    <div class="modal">
+      <h3>Add frame</h3>
+      <label>Title</label><input id="fTitle" placeholder="Frame 1 — Evan enters" />
+      <label>Dialogue / caption</label><textarea id="fCap" rows="2"></textarea>
+      <label>Shot type</label>
+      <select id="fShot"></select>
+      <label>Visual notes</label><textarea id="fNotes" rows="3" placeholder="Composition, blocking, ref"></textarea>
+      <div class="row"><button id="fSave">Add frame</button><button class="ghost" id="fCancel">Cancel</button></div>
+    </div>
+  </div>
+
+<script>
+const $ = s => document.querySelector(s);
+let activeBoard = null;
+const SHOT_TYPES = {{ shot_types | tojson }};
+
+async function api(method, url, body) {
+  const opts = { method, headers: {} };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.status === 204 ? null : r.json();
+}
+
+function renderBoardList(boards) {
+  const el = $('#boardList');
+  el.innerHTML = '';
+  boards.forEach(b => {
+    const d = document.createElement('div');
+    d.className = 'board' + (activeBoard === b.id ? ' active' : '');
+    d.innerHTML = `<h3>${esc(b.title)}</h3><p>${b.frames.length} frame(s) · ${shortDate(b.created)}</p>`;
+    d.onclick = () => selectBoard(b.id);
+    el.appendChild(d);
+  });
+}
+
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function shortDate(s){return (s||'').slice(0,10);}
+
+async function refreshBoards() {
+  const boards = await api('GET', '/api/boards');
+  renderBoardList(boards);
+  if (activeBoard) selectBoard(activeBoard, boards);
+}
+
+async function selectBoard(id, boards) {
+  activeBoard = id;
+  boards = boards || await api('GET', '/api/boards');
+  const b = boards.find(x => x.id === id);
+  if (!b) { $('#content').innerHTML = '<div class="empty">Select or create a storyboard.</div>'; return; }
+  renderBoardList(boards);
+  const frames = [...b.frames].sort((a,c)=>a.order-c.order);
+  $('#content').innerHTML = `
+    <div class="row" style="margin-bottom:14px">
+      <h2 style="margin:0">${esc(b.title)}</h2>
+      <span style="flex:1"></span>
+      <button id="addFrame">+ Add frame</button>
+      <button class="danger" id="delBoard">Delete board</button>
+    </div>
+    <p class="hint">${esc(b.description||'')}</p>
+    <div class="grid" id="frameGrid"></div>`;
+  const g = $('#frameGrid');
+  if (!frames.length) g.innerHTML = '<div class="empty">No frames yet — add the first shot.</div>';
+  frames.forEach(f => {
+    const d = document.createElement('div');
+    d.className = 'frame';
+    d.innerHTML = `<span class="shot">${esc(f.shot||'shot')}</span>
+      <h4>${esc(f.title||'Untitled')}</h4>
+      <div class="cap">${esc(f.caption||'')}</div>
+      <div class="notes">${esc(f.notes||'')}</div>
+      <div class="row" style="margin-top:8px"><button class="ghost" data-del="${f.id}">remove</button></div>`;
+    d.querySelector('[data-del]').onclick = async () => {
+      await api('DELETE', `/api/boards/${id}/frames/${f.id}`);
+      selectBoard(id);
+    };
+    g.appendChild(d);
+  });
+  $('#addFrame').onclick = openFrameModal;
+  $('#delBoard').onclick = async () => {
+    if (confirm('Delete this storyboard?')) {
+      await api('DELETE', '/api/boards/'+id);
+      activeBoard = null; refreshBoards();
+    }
+  };
+}
+
+// modals
+function openModal(id){ $(id).classList.add('show'); }
+function closeModal(id){ $(id).classList.remove('show'); }
+
+$('#newBoard').onclick = () => { $('#bTitle').value=''; $('#bDesc').value=''; openModal('#boardModal'); };
+$('#bCancel').onclick = () => closeModal('#boardModal');
+$('#bSave').onclick = async () => {
+  await api('POST','/api/boards',{title:$('#bTitle').value,description:$('#bDesc').value});
+  closeModal('#boardModal'); refreshBoards();
+};
+
+function openFrameModal(){
+  $('#fTitle').value=''; $('#fCap').value=''; $('#fNotes').value='';
+  const sel = $('#fShot'); sel.innerHTML='';
+  SHOT_TYPES.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;sel.appendChild(o);});
+  openModal('#frameModal');
+}
+$('#fCancel').onclick = () => closeModal('#frameModal');
+$('#fSave').onclick = async () => {
+  await api('POST',`/api/boards/${activeBoard}/frames`,{
+    title:$('#fTitle').value, caption:$('#fCap').value,
+    shot:$('#fShot').value, notes:$('#fNotes').value });
+  closeModal('#frameModal'); selectBoard(activeBoard);
+};
+
+refreshBoards();
+</script>
+</body>
+</html>
