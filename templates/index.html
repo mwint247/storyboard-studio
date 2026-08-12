@@ -24,6 +24,7 @@
     .board p { margin:0; color:var(--muted); font-size:12px; }
     .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px; }
     .frame { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; }
+    .frame img { width:100%; border-radius:8px; margin-bottom:8px; display:block; background:#000; }
     .frame .shot { display:inline-block; font-size:11px; color:var(--accent2); border:1px solid #1d3b30; border-radius:20px; padding:2px 8px; margin-bottom:6px; }
     .frame h4 { margin:4px 0; font-size:15px; }
     .frame .cap { color:var(--fg); font-size:13px; }
@@ -34,6 +35,7 @@
     .modal-bg.show { display:flex; }
     .modal { background:var(--bg); border:1px solid var(--line); border-radius:14px; padding:20px; width:min(440px,92vw); }
     .hint { color:var(--muted); font-size:12px; }
+    #drop { border:1px dashed var(--line); border-radius:10px; padding:18px; text-align:center; color:var(--muted); margin:8px 0; }
   </style>
 </head>
 <body>
@@ -42,6 +44,7 @@
     <span class="hint">local Flask app — data saved as JSON in ./data</span>
     <span style="flex:1"></span>
     <button class="ghost" id="newBoard">+ New storyboard</button>
+    <button class="ghost" id="uploadBtn">⬆ Upload</button>
   </header>
   <main>
     <aside class="sidebar" id="boardList"></aside>
@@ -73,14 +76,29 @@
     </div>
   </div>
 
+  <!-- Upload modal -->
+  <div class="modal-bg" id="uploadModal">
+    <div class="modal">
+      <h3>Upload storyboard</h3>
+      <p class="hint">JSON board, CSV/Markdown scene list, or image files (one frame per sketch). Multiple files allowed.</p>
+      <label>Board title (optional)</label><input id="uTitle" placeholder="leave blank to use filename" />
+      <div id="drop">Drop files or use the button below</div>
+      <input id="uFile" type="file" multiple accept=".json,.csv,.md,.txt,.png,.jpg,.jpeg,.webp,.gif,.bmp" />
+      <div class="row"><button id="uSave">Import</button><button class="ghost" id="uCancel">Cancel</button></div>
+    </div>
+  </div>
+
 <script>
 const $ = s => document.querySelector(s);
 let activeBoard = null;
 const SHOT_TYPES = {{ shot_types | tojson }};
 
-async function api(method, url, body) {
+async function api(method, url, body, isForm) {
   const opts = { method, headers: {} };
-  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  if (body) {
+    if (isForm) { opts.body = body; }
+    else { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  }
   const r = await fetch(url, opts);
   if (!r.ok) throw new Error(await r.text());
   return r.status === 204 ? null : r.json();
@@ -119,16 +137,19 @@ async function selectBoard(id, boards) {
       <h2 style="margin:0">${esc(b.title)}</h2>
       <span style="flex:1"></span>
       <button id="addFrame">+ Add frame</button>
+      <button class="ghost" id="exportBtn">⬇ Export JSON</button>
       <button class="danger" id="delBoard">Delete board</button>
     </div>
     <p class="hint">${esc(b.description||'')}</p>
     <div class="grid" id="frameGrid"></div>`;
   const g = $('#frameGrid');
-  if (!frames.length) g.innerHTML = '<div class="empty">No frames yet — add the first shot.</div>';
+  if (!frames.length) g.innerHTML = '<div class="empty">No frames yet — add the first shot or upload a board.</div>';
   frames.forEach(f => {
     const d = document.createElement('div');
     d.className = 'frame';
-    d.innerHTML = `<span class="shot">${esc(f.shot||'shot')}</span>
+    const img = f.image ? `<img src="/uploads/${esc(f.image)}" alt="" />` : '';
+    d.innerHTML = `${img}
+      <span class="shot">${esc(f.shot||'shot')}</span>
       <h4>${esc(f.title||'Untitled')}</h4>
       <div class="cap">${esc(f.caption||'')}</div>
       <div class="notes">${esc(f.notes||'')}</div>
@@ -140,6 +161,14 @@ async function selectBoard(id, boards) {
     g.appendChild(d);
   });
   $('#addFrame').onclick = openFrameModal;
+  $('#exportBtn').onclick = async () => {
+    const b = await api('GET', `/api/boards/${id}/export`);
+    const blob = new Blob([JSON.stringify(b, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (b.title||'storyboard').replace(/[^a-z0-9]+/gi,'_').toLowerCase()+'.json';
+    a.click();
+  };
   $('#delBoard').onclick = async () => {
     if (confirm('Delete this storyboard?')) {
       await api('DELETE', '/api/boards/'+id);
@@ -171,6 +200,23 @@ $('#fSave').onclick = async () => {
     title:$('#fTitle').value, caption:$('#fCap').value,
     shot:$('#fShot').value, notes:$('#fNotes').value });
   closeModal('#frameModal'); selectBoard(activeBoard);
+};
+
+// upload
+$('#uploadBtn').onclick = () => { $('#uTitle').value=''; $('#uFile').value=''; openModal('#uploadModal'); };
+$('#uCancel').onclick = () => closeModal('#uploadModal');
+$('#uSave').onclick = async () => {
+  const files = $('#uFile').files;
+  if (!files.length) { alert('Choose at least one file'); return; }
+  const fd = new FormData();
+  for (const f of files) fd.append('file', f);
+  if ($('#uTitle').value) fd.append('title', $('#uTitle').value);
+  const res = await fetch('/api/import', { method:'POST', body: fd });
+  if (!res.ok) { alert('Import failed: ' + await res.text()); return; }
+  const data = await res.json();
+  closeModal('#uploadModal');
+  if (data.imported && data.imported.length) { activeBoard = data.imported[0]; }
+  refreshBoards();
 };
 
 refreshBoards();
